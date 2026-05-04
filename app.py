@@ -273,17 +273,22 @@ else:
 
 airport_options = [(f"{ap['city']} ({ap['iata']}) - {ap['name']}", ap) for ap in MAJOR_AIRPORTS]
 airport_options = sorted(airport_options, key=lambda x: x[0])
+airport_options_with_empty = [("Select an airport", None)] + airport_options
+
 if "flight_search_done" not in st.session_state:
     st.session_state.flight_search_done = False
 
 if "airport_select" not in st.session_state:
-    st.session_state.airport_select = 0
+    st.session_state.airport_select = None
 
-if st.session_state.get("airport_select") != st.session_state.get("last_airport_index"):
+if st.session_state.get("airport_select") is not None and st.session_state.get("airport_select") != st.session_state.get("last_airport_index"):
     st.session_state.flight_search_done = False
     st.session_state.last_airport_index = st.session_state.airport_select
 
-departure_airport = airport_options[st.session_state.airport_select][1]
+departure_airport = None
+
+if st.session_state.airport_select is not None:
+    departure_airport = airport_options[st.session_state.airport_select - 1][1]
 
 url = f"{API_BASE_URL}/artists/id_{artist_id}/events?app_id={app_id}&date=upcoming"
 response = requests.get(url)
@@ -325,11 +330,12 @@ if response.status_code == 200:
         
         m = folium.Map(location=[center_lat, center_lng], zoom_start=5)
         
-        folium.Marker(
-            location=[departure_airport["lat"], departure_airport["lng"]],
-            popup=f"DEPARTURE: {departure_airport['name']} ({departure_airport['iata']})",
-            icon=folium.Icon(color="green", icon="play")
-        ).add_to(m)
+        if departure_airport is not None:
+            folium.Marker(
+                location=[departure_airport["lat"], departure_airport["lng"]],
+                popup=f"DEPARTURE: {departure_airport['name']} ({departure_airport['iata']})",
+                icon=folium.Icon(color="green", icon="play")
+            ).add_to(m)
         
         for c in cities:
             venue_date = c["datetime"][:10]
@@ -372,19 +378,23 @@ if response.status_code == 200:
         st.write("### Select Departure Airport")
         st.selectbox(
             "Choose your departure airport",
-            range(len(airport_options)),
-            format_func=lambda i: airport_options[i][0],
+            range(len(airport_options_with_empty)),
+            index=0,
+            format_func=lambda i: airport_options_with_empty[i][0],
             key="airport_select"
         )
         
         st.write("---")
         
         if not st.session_state.flight_search_done:
-            if st.button("🔍 Search Flights", type="primary"):
-                st.session_state.flight_search_done = True
-                st.rerun()
+            if st.button("🔍 Search Flights", type="primary", disabled=(st.session_state.airport_select is None)):
+                if st.session_state.airport_select is None:
+                    st.warning("Please select a departure airport")
+                else:
+                    st.session_state.flight_search_done = True
+                    st.rerun()
         
-        if st.session_state.flight_search_done:
+        if st.session_state.flight_search_done and departure_airport is not None:
             st.write("### Flight Options")
             
             with st.spinner("Searching for flights..."):
