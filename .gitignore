@@ -10,7 +10,9 @@ env/
 *.egg-info/
 dist/
 build/
+activate
 .pytest_cache/
 .mypy_cache/
 .DS_Store
 *.log
+.aider*

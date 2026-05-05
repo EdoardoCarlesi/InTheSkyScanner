@@ -1,11 +1,114 @@
 import math
 import os
+import json
 from datetime import datetime, timedelta
 import toml
 import streamlit as st
 import requests
 from streamlit_folium import st_folium
 import folium
+
+
+def check_serpapi_usage():
+    """Check remaining SerpAPI calls from their account API."""
+    api_key = st.secrets.get("SERPAPI_API_KEY")
+    if not api_key:
+        return None, 0, 0
+    
+    try:
+        response = requests.get(f"https://serpapi.com/account", params={"api_key": api_key}, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            searches_left = data.get("plan_searches_left", 0)
+            print(f"[SerpAPI] Remaining: {searches_left}")
+            return "serpapi", searches_left, searches_left
+    except Exception as e:
+        print(f"[SerpAPI] Error: {e}")
+    return None, 0, 0
+
+
+def check_rapidapi_usage():
+    """Check remaining RapidAPI Skyscanner calls from response headers."""
+    api_key = st.secrets.get("RAPIDAPI_KEY")
+    if not api_key:
+        return None, 0, 0
+    
+    headers = {
+        "X-RapidAPI-Key": api_key,
+        "X-RapidAPI-Host": "skyscanner-skyscanner-flight-search-v1.p.rapidapi.com",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
+    data = {
+        "inboundDate": "01/06/2026",
+        "cabinClass": "economy",
+        "country": "US",
+        "currency": "USD",
+        "locale": "en-US",
+        "originPlace": "LON-sky",
+        "destinationPlace": "PAR-sky",
+        "outboundDate": "01/06/2026",
+        "adults": 1
+    }
+    
+    try:
+        response = requests.post(
+            "https://skyscanner-skyscanner-flight-search-v1.p.rapidapi.com/apiservices/pricing/v1.0",
+            headers=headers,
+            data=data,
+            timeout=10
+        )
+        print(f"[Skyscanner] Status: {response.status_code}")
+        print(f"[Skyscanner] Headers: {dict(response.headers)}")
+        remaining = int(response.headers.get("x-ratelimit-requests-remaining", 0))
+        limit = int(response.headers.get("x-ratelimit-requests-limit", 0))
+        hard_limit_remaining = int(response.headers.get("x-rate-limit-rapid-free-plans-hard-limit-remaining", 0))
+        print(f"[Skyscanner] Remaining: {remaining}, Limit: {limit}, Hard limit remaining: {hard_limit_remaining}")
+        return "rapidapi", hard_limit_remaining if hard_limit_remaining > 0 else remaining, limit
+    except Exception as e:
+        print(f"[Skyscanner] Error: {e}")
+    return None, 0, 0
+    
+    try:
+        response = requests.get(
+            "https://flight-search.p.rapidapi.com/endpoint",
+            #"https://kiwi-com-flight-search-v1.p.rapidapi.com/v2/flights",
+            headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": "flight-search.p.rapidapi.com"},
+            params={"fly_from": "LON", "fly_to": "PAR", "date_from": "01/06/2026", "date_to": "01/06/2026"},
+            timeout=10
+        )
+        print(f"[RapidAPI] All headers: {dict(response.headers)}")
+        remaining = int(response.headers.get("x-ratelimit-requests-remaining", 0))
+        limit = int(response.headers.get("x-ratelimit-requests-limit", 0))
+        hard_limit_remaining = int(response.headers.get("x-rate-limit-rapid-free-plans-hard-limit-remaining", 0))
+        print(f"[RapidAPI] Remaining: {remaining}, Limit: {limit}, Hard limit remaining: {hard_limit_remaining}")
+        return "rapidapi", hard_limit_remaining if hard_limit_remaining > 0 else remaining, limit
+    except Exception as e:
+        print(f"[RapidAPI] Error: {e}")
+    return None, 0, 0
+
+
+def check_api_limits():
+    """Check remaining calls for all flight APIs."""
+    serp_limit, serp_remaining, _ = check_serpapi_usage()
+    rapid_limit, rapid_remaining, _ = check_rapidapi_usage()
+    
+    return {
+        "serpapi": {"remaining": serp_remaining, "limit": serp_remaining},
+        "rapidapi": {"remaining": rapid_remaining, "limit": rapid_remaining}
+    }
+
+
+def print_api_usage_summary():
+    """Print total API calls remaining."""
+    api_limits = check_api_limits()
+    serp = api_limits.get("serpapi", {}).get("remaining", 0)
+    rapid = api_limits.get("rapidapi", {}).get("remaining", 0)
+    print(f"\n=== API Calls Remaining ===")
+    print(f"SerpAPI: {serp}")
+    print(f"RapidAPI: {rapid}")
+    print(f"Total remaining: {serp + rapid}")
+    print("===========================\n")
 
 
 @st.cache_data(ttl=86400)
@@ -34,66 +137,81 @@ def search_flights_cached(departure_iata, arrival_iata, outbound_date, return_da
 
 @st.cache_data(ttl=86400)
 def search_flights_rapidapi(departure_iata, arrival_iata, outbound_date, return_date, _api_key):
-    """Search flights using RapidAPI Kiwi.com API as fallback."""
-    url = "https://kiwi-com-flight-search-v1.p.rapidapi.com/v2/flights"
+    """Search flights using RapidAPI Skyscanner API as fallback."""
+    url = "https://skyscanner-skyscanner-flight-search-v1.p.rapidapi.com/apiservices/pricing/v1.0"
     
     headers = {
         "X-RapidAPI-Key": _api_key,
-        "X-RapidAPI-Host": "kiwi-com-flight-search-v1.p.rapidapi.com"
+        "X-RapidAPI-Host": "skyscanner-skyscanner-flight-search-v1.p.rapidapi.com",
+        "Content-Type": "application/x-www-form-urlencoded"
     }
     
-    params = {
-        "fly_from": departure_iata,
-        "fly_to": arrival_iata,
-        "date_from": outbound_date,
-        "date_to": outbound_date,
-        "return_from": return_date,
-        "return_to": return_date,
-        "curr": "EUR"
+    data = {
+        "inboundDate": return_date,
+        "cabinClass": "economy",
+        "children": 0,
+        "infants": 0,
+        "country": "US",
+        "currency": "USD",
+        "locale": "en-US",
+        "originPlace": f"{departure_iata}-sky",
+        "destinationPlace": f"{arrival_iata}-sky",
+        "outboundDate": outbound_date,
+        "adults": 1
     }
     
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            flights = []
-            if "data" in data:
-                for f in data["data"][:3]:
-                    flights.append({
-                        "price": f"${f.get('price', 0)}",
-"currency": "EUR",
-                        "total_duration": f.get('duration', {}).get('total', 0),
-                        "flights": [{
-                            "airline": f.get('airlines', [''])[0] if f.get('airlines') else "Unknown",
-                            "flight_number": f.get('flight_no', ''),
-                        }],
-                        "route": f.get('route', []),
-                        "booking_token": f.get('booking_token', '')
-                    })
-            return {"rapidapi_flights": flights, "currency": "EUR"}
+        response = requests.post(url, headers=headers, data=data, timeout=30)
+        if response.status_code == 201:
+            location = response.headers.get("Location", "")
+            session_key = location.split("/")[-1] if location else ""
+            
+            if session_key:
+                poll_url = f"https://skyscanner-skyscanner-flight-search-v1.p.rapidapi.com/apiservices/pricing/uk2/v1.0/{session_key}?pageIndex=0&pageSize=10"
+                poll_response = requests.get(poll_url, headers=headers, timeout=30)
+                if poll_response.status_code == 200:
+                    data = poll_response.json()
+                    flights = []
+                    if "Itineraries" in data:
+                        for item in data["Itineraries"][:3]:
+                            price = item.get("PricingOptions", [{}])[0].get("Price", "N/A")
+                            flights.append({
+                                "price": f"${price}",
+                                "currency": "USD",
+                                "total_duration": 0,
+                                "flights": [],
+                                "raw": item
+                            })
+                    return {"rapidapi_flights": flights, "currency": "USD"}
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[Skyscanner API Error] {e}")
         return None
 
 
 def search_flights(departure_iata, arrival_iata, outbound_date, return_date):
-    """Search flights using SerpApi with RapidAPI fallback."""
+    """Search flights using SerpApi with RapidAPI fallback, checking API limits."""
+    api_limits = check_api_limits()
+    
+    serp_remaining = api_limits.get("serpapi", {}).get("remaining", 0)
+    rapid_remaining = api_limits.get("rapidapi", {}).get("remaining", 0)
+    
+    if serp_remaining <= 0 and rapid_remaining <= 0:
+        return {"over_limit": True, "serpapi_remaining": serp_remaining, "rapidapi_remaining": rapid_remaining}
+    
     api_key = st.secrets.get("SERPAPI_API_KEY")
-    if not api_key:
-        return None
-    
-    result = search_flights_cached(departure_iata, arrival_iata, outbound_date, return_date, api_key)
-    
-    if result and (result.get("best_flights") or result.get("other_flights")):
-        return result
+    if api_key and serp_remaining > 0:
+        result = search_flights_cached(departure_iata, arrival_iata, outbound_date, return_date, api_key)
+        if result and (result.get("best_flights") or result.get("other_flights")):
+            return result
     
     rapidapi_key = st.secrets.get("RAPIDAPI_KEY")
-    if rapidapi_key:
+    if rapidapi_key and rapid_remaining > 0:
         fallback = search_flights_rapidapi(departure_iata, arrival_iata, outbound_date, return_date, rapidapi_key)
         if fallback:
             return fallback
     
-    return result
+    return None
 
 MAJOR_AIRPORTS = [
     {"name": "Malpensa", "iata": "MXP", "lat": 45.6306, "lng": 8.7231, "city": "Milan"},
@@ -421,42 +539,46 @@ if response.status_code == 200:
                         )
                         
                         if result:
-                            rapid_flights = result.get("rapidapi_flights")
-                            if rapid_flights:
-                                currency = result.get("currency", "USD")
-                                for flight in rapid_flights:
-                                    price = flight.get("price", "N/A")
-                                    duration = flight.get("total_duration", 0)
-                                    hours = duration // 60
-                                    mins = duration % 60
-                                    flights = flight.get("flights", [])
-                                    airlines = [f.get("airline", "Unknown") for f in flights]
-                                    stops = len(flights) - 1
-                                    
-                                    st.write(f"  • **{price}** {currency} | {hours}h {mins}m | {stops} stop(s) | {', '.join(airlines) if airlines else 'Multiple airlines'}")
+                            if result.get("over_limit"):
+                                link = f"https://www.google.com/travel/flights?hl=en&q={departure_airport['iata']}%20to%20{ap['iata']}%20{dep_date}%20to%20{ret_date}"
+                                st.markdown(f"  • **[Search on Google Flights]({link})**")
+                                st.caption(f"  (API calls exhausted: SerpAPI {result.get('serpapi_remaining')} remaining, RapidAPI {result.get('rapidapi_remaining')} remaining)")
                             else:
-                                best = result.get("best_flights", [])
-                                other = result.get("other_flights", [])
-                                all_flights = best + other
-                                if all_flights:
-                                    currency = result.get("search_parameters", {}).get("currency", "USD")
-                                    for flight in all_flights[:3]:
+                                rapid_flights = result.get("rapidapi_flights")
+                                if rapid_flights:
+                                    currency = result.get("currency", "USD")
+                                    for flight in rapid_flights:
                                         price = flight.get("price", "N/A")
                                         duration = flight.get("total_duration", 0)
                                         hours = duration // 60
                                         mins = duration % 60
                                         flights = flight.get("flights", [])
+                                        airlines = [f.get("airline", "Unknown") for f in flights]
                                         stops = len(flights) - 1
-                                        airlines = list(set(f.get("airline", "") for f in flights if f.get("airline")))
-                                        
-                                        link = f"https://www.google.com/travel/flights?hl=en&q={departure_airport['iata']}%20to%20{ap['iata']}%20{dep_date}"
-                                        st.markdown(f"  • **[{price}]({link})** {currency} | {hours}h {mins}m | {stops} stop(s) | {', '.join(airlines) if airlines else 'Multiple airlines'}")
+                                        st.write(f"  • **{price}** {currency} | {hours}h {mins}m | {stops} stop(s) | {', '.join(airlines) if airlines else 'Multiple airlines'}")
                                 else:
-                                    st.write("  No flights found")
+                                    best = result.get("best_flights", [])
+                                    other = result.get("other_flights", [])
+                                    all_flights = best + other
+                                    if all_flights:
+                                        currency = result.get("search_parameters", {}).get("currency", "USD")
+                                        for flight in all_flights[:3]:
+                                            price = flight.get("price", "N/A")
+                                            duration = flight.get("total_duration", 0)
+                                            hours = duration // 60
+                                            mins = duration % 60
+                                            flights = flight.get("flights", [])
+                                            stops = len(flights) - 1
+                                            airlines = list(set(f.get("airline", "") for f in flights if f.get("airline")))
+                                            link = f"https://www.google.com/travel/flights?hl=en&q={departure_airport['iata']}%20to%20{ap['iata']}%20{dep_date}%20to%20{ret_date}"
+                                            st.markdown(f"  • **[{price}]({link})** {currency} | {hours}h {mins}m | {stops} stop(s) | {', '.join(airlines) if airlines else 'Multiple airlines'}")
+                                    else:
+                                        st.write("  No flights found")
                         else:
                             st.write("  Search failed")
                         st.write("")
                 st.write("")
+                print_api_usage_summary()
     else:
         st.warning("No events with location data found")
 else:
